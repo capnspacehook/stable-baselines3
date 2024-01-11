@@ -1,4 +1,5 @@
 import multiprocessing as mp
+import selectors
 import warnings
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
@@ -92,10 +93,21 @@ class SubprocVecEnv(VecEnv):
            Defaults to 'forkserver' on available platforms, and 'spawn' otherwise.
     """
 
-    def __init__(self, env_fns: List[Callable[[], gym.Env]], start_method: Optional[str] = None):
+    def __init__(
+        self,
+        env_fns: List[Callable[[], gym.Env]],
+        start_method: Optional[str] = None,
+        batch_size: Optional[int] = None,
+    ):
         self.waiting = False
         self.closed = False
         n_envs = len(env_fns)
+        self.last_env_ids = list(range(n_envs))
+        self.env_steps = {env_id: 0 for env_id in range(n_envs)}
+
+        self.batch_size = batch_size
+        if self.batch_size is None:
+            self.batch_size = n_envs
 
         if start_method is None:
             # Fork is not a thread safe method (see issue #217)
@@ -106,6 +118,10 @@ class SubprocVecEnv(VecEnv):
         ctx = mp.get_context(start_method)
 
         self.remotes, self.work_remotes = zip(*[ctx.Pipe() for _ in range(n_envs)])
+        self.sel = selectors.DefaultSelector()
+        for remote in self.remotes:
+            self.sel.register(remote, selectors.EVENT_READ)
+
         self.processes = []
         for work_remote, remote, env_fn in zip(self.work_remotes, self.remotes, env_fns):
             args = (work_remote, remote, CloudpickleWrapper(env_fn))
@@ -121,12 +137,31 @@ class SubprocVecEnv(VecEnv):
         super().__init__(len(env_fns), observation_space, action_space)
 
     def step_async(self, actions: np.ndarray) -> None:
-        for remote, action in zip(self.remotes, actions):
-            remote.send(("step", action))
+        for i, action in zip(self.last_env_ids, actions):
+            self.remotes[i].send(("step", action))
         self.waiting = True
 
     def step_wait(self) -> VecEnvStepReturn:
-        results = [remote.recv() for remote in self.remotes]
+        results = []
+        next_env_ids = []
+        while len(results) < self.batch_size:
+            for key, _ in self.sel.select():
+                remote_pipe = key.fileobj
+                env_id = self.remotes.index(remote_pipe)
+
+                if remote_pipe.poll():
+                    obs, rew, dones, info, reset_info = remote_pipe.recv()
+                    info["step"] = self.env_steps[env_id]
+                    info["env_id"] = env_id
+                    results.append((obs, rew, dones, info, reset_info))
+                    next_env_ids.append(env_id)
+
+                    self.env_steps[env_id] += 1
+
+                if len(results) == self.batch_size:
+                    break
+
+        self.last_env_ids = next_env_ids
         self.waiting = False
         obs, rews, dones, infos, self.reset_infos = zip(*results)  # type: ignore[assignment]
         return _flatten_obs(obs, self.observation_space), np.stack(rews), np.stack(dones), infos  # type: ignore[return-value]
@@ -136,6 +171,8 @@ class SubprocVecEnv(VecEnv):
             remote.send(("reset", (self._seeds[env_idx], self._options[env_idx])))
         results = [remote.recv() for remote in self.remotes]
         obs, self.reset_infos = zip(*results)  # type: ignore[assignment]
+
+        self.last_env_ids = list(range(self.num_envs))
         # Seeds and options are only used once
         self._reset_seeds()
         self._reset_options()

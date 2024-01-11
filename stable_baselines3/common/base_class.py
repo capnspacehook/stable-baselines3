@@ -142,7 +142,11 @@ class BaseAlgorithm(ABC):
         self.learning_rate = learning_rate
         self.tensorboard_log = tensorboard_log
         self._last_obs = None  # type: Optional[Union[np.ndarray, Dict[str, np.ndarray]]]
+        self._last_batch_obs = None
         self._last_episode_starts = None  # type: Optional[np.ndarray]
+        self._seen_steps = set()
+        self.training_data = {}
+        self._results = {}
         # When using VecNormalize:
         self._last_original_obs = None  # type: Optional[Union[np.ndarray, Dict[str, np.ndarray]]]
         self._episode_num = 0
@@ -421,6 +425,7 @@ class BaseAlgorithm(ABC):
         if reset_num_timesteps or self._last_obs is None:
             assert self.env is not None
             self._last_obs = self.env.reset()  # type: ignore[assignment]
+            self._last_batch_obs = self._last_obs
             self._last_episode_starts = np.ones((self.env.num_envs,), dtype=bool)
             # Retrieve unnormalized observation for saving into the buffer
             if self._vec_normalize_env is not None:
@@ -504,6 +509,7 @@ class BaseAlgorithm(ABC):
         # See issue https://github.com/DLR-RM/stable-baselines3/issues/597
         if force_reset:
             self._last_obs = None
+            self._last_batch_obs = None
 
         self.n_envs = env.num_envs
         self.env = env
@@ -716,6 +722,7 @@ class BaseAlgorithm(ABC):
             # See issue https://github.com/DLR-RM/stable-baselines3/issues/597
             if force_reset and data is not None:
                 data["_last_obs"] = None
+                data["_last_batch_obs"] = None
             # `n_envs` must be updated. See issue https://github.com/DLR-RM/stable-baselines3/issues/1018
             if data is not None:
                 data["n_envs"] = env.num_envs

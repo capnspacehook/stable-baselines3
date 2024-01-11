@@ -13,6 +13,7 @@ from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean
 from stable_baselines3.common.vec_env import VecEnv
+from stable_baselines3.common.vec_env.subproc_vec_env import _flatten_obs
 
 SelfOnPolicyAlgorithm = TypeVar("SelfOnPolicyAlgorithm", bound="OnPolicyAlgorithm")
 
@@ -168,32 +169,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         callback.on_rollout_start()
 
         while n_steps < n_rollout_steps:
-            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
-                # Sample a new noise matrix
-                self.policy.reset_noise(env.num_envs)
-
-            with th.no_grad():
-                # Convert to pytorch tensor or to TensorDict
-                obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                actions, values, log_probs = self.policy(obs_tensor)
-            actions = actions.cpu().numpy()
-
-            # Rescale and perform action
-            clipped_actions = actions
-
-            if isinstance(self.action_space, spaces.Box):
-                if self.policy.squash_output:
-                    # Unscale the actions to match env bounds
-                    # if they were previously squashed (scaled in [-1, 1])
-                    clipped_actions = self.policy.unscale_action(clipped_actions)
-                else:
-                    # Otherwise, clip the actions to avoid out of bound error
-                    # as we are sampling from an unbounded Gaussian distribution
-                    clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
-
-            new_obs, rewards, dones, infos = env.step(clipped_actions)
-
-            self.num_timesteps += env.num_envs
+            actions, values, log_probs, new_obs, rewards, dones, infos = self._step(env, n_steps)
 
             # Give access to local variables
             callback.update_locals(locals())
@@ -242,6 +218,85 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         callback.on_rollout_end()
 
         return True
+
+    def _step(self, env: VecEnv, n_steps: int):
+        while True:
+            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+                # Sample a new noise matrix
+                self.policy.reset_noise(env.num_envs)
+
+            with th.no_grad():
+                # Convert to pytorch tensor or to TensorDict
+                obs_tensor = obs_as_tensor(self._last_batch_obs, self.device)
+                actions, values, log_probs = self.policy(obs_tensor)
+            actions = actions.cpu().numpy()
+
+            # If the policy produced outputs for every env, store them now
+            # or else only the outputs for the envs that sent results will
+            # be stored
+            if len(actions) == env.num_envs:
+                self._seen_steps.add(self.num_timesteps)
+                self.training_data[self.num_timesteps] = [None] * env.num_envs
+                for env_id, action in enumerate(actions):
+                    self.training_data[self.num_timesteps][env_id] = (action, values[env_id], log_probs[env_id])
+
+            # Rescale and perform action
+            clipped_actions = actions
+
+            if isinstance(self.action_space, spaces.Box):
+                if self.policy.squash_output:
+                    # Unscale the actions to match env bounds
+                    # if they were previously squashed (scaled in [-1, 1])
+                    clipped_actions = self.policy.unscale_action(clipped_actions)
+                else:
+                    # Otherwise, clip the actions to avoid out of bound error
+                    # as we are sampling from an unbounded Gaussian distribution
+                    clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+
+            new_obs, rewards, dones, infos = env.step(clipped_actions)
+
+            self._last_batch_obs = new_obs
+            self.num_timesteps += len(infos)
+
+            # Store the returned results, there may not be enough results
+            # to return step results from every env yet
+            for i, info in enumerate(infos):
+                step = info["step"]
+                env_id = info["env_id"]
+                if step not in self._results:
+                    self._seen_steps.add(step)
+                    self._results[step] = [None] * env.num_envs
+                    if step not in self.training_data:
+                        self.training_data[step] = [None] * env.num_envs
+
+                # new_obs is an OrderedDict and we need to extract a single
+                # dict that's from env env_id so we keep all env results in
+                # one place
+                obs = {key: new_obs[key][i] for key in new_obs.keys()}
+                self._results[step][env_id] = (obs, rewards[i], dones[i], info)
+                if self.training_data[step][env_id] is None:
+                    self.training_data[step][env_id] = (actions[i], values[i], log_probs[i])
+
+            # If the smallest step we've seen has results from all envs,
+            # process and return the results
+            min_step = min(self._seen_steps)
+            if None not in self._results[min_step]:
+                actions, values, log_probs = zip(*self.training_data[min_step])
+                new_obs, rewards, dones, infos = zip(*self._results[min_step])
+
+                self._seen_steps.remove(min_step)
+                del self.training_data[min_step]
+                del self._results[min_step]
+
+                return (
+                    np.stack(actions),
+                    th.stack(values),
+                    th.stack(log_probs),
+                    _flatten_obs(new_obs, space=env.observation_space),
+                    np.stack(rewards),
+                    np.stack(dones),
+                    infos,
+                )
 
     def train(self) -> None:
         """
