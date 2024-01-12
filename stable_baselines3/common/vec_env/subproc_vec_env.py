@@ -1,5 +1,4 @@
 import multiprocessing as mp
-import selectors
 import warnings
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
@@ -19,8 +18,10 @@ from stable_baselines3.common.vec_env.patch_gym import _patch_env
 
 
 def _worker(
+    env_id: int,
     remote: mp.connection.Connection,
     parent_remote: mp.connection.Connection,
+    results_queue: mp.Queue,
     env_fn_wrapper: CloudpickleWrapper,
 ) -> None:
     # Import here to avoid a circular import
@@ -41,7 +42,7 @@ def _worker(
                     # save final observation where user can get it, then reset
                     info["terminal_observation"] = observation
                     observation, reset_info = env.reset()
-                remote.send((observation, reward, done, info, reset_info))
+                results_queue.put((env_id, observation, reward, done, info, reset_info))
             elif cmd == "reset":
                 maybe_options = {"options": data[1]} if data[1] else {}
                 observation, reset_info = env.reset(seed=data[0], **maybe_options)
@@ -118,13 +119,12 @@ class SubprocVecEnv(VecEnv):
         ctx = mp.get_context(start_method)
 
         self.remotes, self.work_remotes = zip(*[ctx.Pipe() for _ in range(n_envs)])
-        self.sel = selectors.DefaultSelector()
-        for remote in self.remotes:
-            self.sel.register(remote, selectors.EVENT_READ)
+        self.results_queue = ctx.Queue()
 
         self.processes = []
-        for work_remote, remote, env_fn in zip(self.work_remotes, self.remotes, env_fns):
-            args = (work_remote, remote, CloudpickleWrapper(env_fn))
+        for env_id, process_args in enumerate(zip(self.work_remotes, self.remotes, env_fns)):
+            work_remote, remote, env_fn = process_args
+            args = (env_id, work_remote, remote, self.results_queue, CloudpickleWrapper(env_fn))
             # daemon=True: if the main process crashes, we should not cause things to hang
             process = ctx.Process(target=_worker, args=args, daemon=True)  # type: ignore[attr-defined]
             process.start()
@@ -148,22 +148,16 @@ class SubprocVecEnv(VecEnv):
             results = []
             next_env_ids = []
             while len(results) < self.batch_size:
-                for key, _ in self.sel.select():
-                    remote_pipe = key.fileobj
-                    env_id = self.remotes.index(remote_pipe)
+                env_id, obs, rew, dones, info, reset_info = self.results_queue.get()
+                info["step"] = self.env_steps[env_id]
+                info["env_id"] = env_id
+                results.append((obs, rew, dones, info, reset_info))
+                next_env_ids.append(env_id)
 
-                    # TODO: is poll necessary?
-                    if remote_pipe.poll():
-                        obs, rew, dones, info, reset_info = remote_pipe.recv()
-                        info["step"] = self.env_steps[env_id]
-                        info["env_id"] = env_id
-                        results.append((obs, rew, dones, info, reset_info))
-                        next_env_ids.append(env_id)
+                self.env_steps[env_id] += 1
 
-                        self.env_steps[env_id] += 1
-
-                    if len(results) == self.batch_size:
-                        break
+                if len(results) == self.batch_size:
+                    break
 
             self.last_env_ids = next_env_ids
 

@@ -88,6 +88,7 @@ class VecNormalize(VecEnvWrapper):
         self.ret_rms = RunningMeanStd(shape=())
         self.clip_obs = clip_obs
         self.clip_reward = clip_reward
+        self.num_steps = 0
         # Returns: discounted rewards
         self.returns = np.zeros(self.num_envs)
         self.gamma = gamma
@@ -183,17 +184,26 @@ class VecNormalize(VecEnvWrapper):
         self.old_obs = obs
         self.old_reward = rewards
 
-        if self.training and self.norm_obs:
-            if isinstance(obs, dict) and isinstance(self.obs_rms, dict):
+        full_results = False
+        if len(infos) == self.venv.num_envs:
+            step_obs, step_rewards, step_dones = obs, rewards, dones
+            full_results = True
+        elif self.num_steps == self.model.num_steps - 1 and self.model.last_step_results is not None:
+            step_obs, step_rewards, step_dones, _ = self.model.last_step_results
+            self.num_steps += 1
+            full_results = True
+
+        if full_results and self.training and self.norm_obs:
+            if isinstance(step_obs, dict) and isinstance(self.obs_rms, dict):
                 for key in self.obs_rms.keys():
-                    self.obs_rms[key].update(obs[key])
+                    self.obs_rms[key].update(step_obs[key])
             else:
-                self.obs_rms.update(obs)
+                self.obs_rms.update(step_obs)
 
         obs = self.normalize_obs(obs)
 
-        if self.training:
-            self._update_reward(rewards)
+        if full_results and self.training:
+            self._update_reward(step_rewards)
         rewards = self.normalize_reward(rewards)
 
         # Normalize the terminal observations
@@ -203,7 +213,9 @@ class VecNormalize(VecEnvWrapper):
             if "terminal_observation" in infos[idx]:
                 infos[idx]["terminal_observation"] = self.normalize_obs(infos[idx]["terminal_observation"])
 
-        self.returns[dones] = 0
+        if full_results:
+            self.returns[step_dones] = 0
+
         return obs, rewards, dones, infos
 
     def _update_reward(self, reward: np.ndarray) -> None:
@@ -304,6 +316,15 @@ class VecNormalize(VecEnvWrapper):
                 assert isinstance(self.obs_rms, RunningMeanStd)
                 self.obs_rms.update(obs)
         return self.normalize_obs(obs)
+
+    def __getstate__(self) -> object:
+        state = self.__dict__.copy()
+        if "model" in state:
+            del state["model"]
+        del state["venv"]
+        # Trying to pickle this results in: "TypeError: cannot pickle 'mappingproxy' object"
+        del state["class_attributes"]
+        return state
 
     @staticmethod
     def load(load_path: str, venv: VecEnv) -> "VecNormalize":

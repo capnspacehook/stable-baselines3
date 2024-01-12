@@ -132,6 +132,7 @@ class BaseAlgorithm(ABC):
         self.policy_kwargs = {} if policy_kwargs is None else policy_kwargs
 
         self.num_timesteps = 0
+        self.num_steps = 0
         # Used for updating schedules
         self._total_timesteps = 0
         # Used for computing fps, it is updated at each call of learn()
@@ -145,8 +146,9 @@ class BaseAlgorithm(ABC):
         self._last_batch_obs = None
         self._last_episode_starts = None  # type: Optional[np.ndarray]
         self._seen_steps = set()
-        self.training_data = {}
+        self._training_data = {}
         self._results = {}
+        self.last_step_results = ()
         # When using VecNormalize:
         self._last_original_obs = None  # type: Optional[Union[np.ndarray, Dict[str, np.ndarray]]]
         self._episode_num = 0
@@ -171,6 +173,7 @@ class BaseAlgorithm(ABC):
         if env is not None:
             env = maybe_make_env(env, self.verbose)
             env = self._wrap_env(env, self.verbose, monitor_wrapper)
+            env.init_vec_env(self)
 
             self.observation_space = env.observation_space
             self.action_space = env.action_space
@@ -494,6 +497,7 @@ class BaseAlgorithm(ABC):
         # if it is not a VecEnv, make it a VecEnv
         # and do other transformations (dict obs, image transpose) if needed
         env = self._wrap_env(env, self.verbose)
+        env.init_vec_env(self)
         assert env.num_envs == self.n_envs, (
             "The number of environments to be set is different from the number of environments in the model: "
             f"({env.num_envs} != {self.n_envs}), whereas `set_env` requires them to be the same. To load a model with "

@@ -170,6 +170,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
         while n_steps < n_rollout_steps:
             actions, values, log_probs, new_obs, rewards, dones, infos = self._step(env, n_steps)
+            self.last_step_results = (new_obs, rewards, dones, infos)
+            self.num_steps += 1
 
             # Give access to local variables
             callback.update_locals(locals())
@@ -236,9 +238,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             # be stored
             if len(actions) == env.num_envs:
                 self._seen_steps.add(self.num_timesteps)
-                self.training_data[self.num_timesteps] = [None] * env.num_envs
+                self._training_data[self.num_timesteps] = [None] * env.num_envs
                 for env_id, action in enumerate(actions):
-                    self.training_data[self.num_timesteps][env_id] = (action, values[env_id], log_probs[env_id])
+                    self._training_data[self.num_timesteps][env_id] = (action, values[env_id], log_probs[env_id])
 
             # Rescale and perform action
             clipped_actions = actions
@@ -269,26 +271,26 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 if step not in self._results:
                     self._seen_steps.add(step)
                     self._results[step] = [None] * env.num_envs
-                    if step not in self.training_data:
-                        self.training_data[step] = [None] * env.num_envs
+                    if step not in self._training_data:
+                        self._training_data[step] = [None] * env.num_envs
 
                 # new_obs is an OrderedDict and we need to extract a single
                 # dict that's from env env_id so we keep all env results in
                 # one place
                 obs = {key: new_obs[key][i] for key in new_obs.keys()}
                 self._results[step][env_id] = (obs, rewards[i], dones[i], info)
-                if self.training_data[step][env_id] is None:
-                    self.training_data[step][env_id] = (actions[i], values[i], log_probs[i])
+                if self._training_data[step][env_id] is None:
+                    self._training_data[step][env_id] = (actions[i], values[i], log_probs[i])
 
             # If the smallest step we've seen has results from all envs,
             # process and return the results
             min_step = min(self._seen_steps)
             if None not in self._results[min_step]:
-                actions, values, log_probs = zip(*self.training_data[min_step])
+                actions, values, log_probs = zip(*self._training_data[min_step])
                 new_obs, rewards, dones, infos = zip(*self._results[min_step])
 
                 self._seen_steps.remove(min_step)
-                del self.training_data[min_step]
+                del self._training_data[min_step]
                 del self._results[min_step]
 
                 return (
