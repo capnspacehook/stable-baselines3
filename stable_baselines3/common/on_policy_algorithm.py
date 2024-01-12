@@ -257,6 +257,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             self._last_batch_obs = new_obs
             self.num_timesteps += len(infos)
+            # If the VecEnv returned results for all envs, just return them
+            if len(infos) == env.num_envs:
+                return actions, values, log_probs, new_obs, rewards, dones, infos
 
             # Store the returned results, there may not be enough results
             # to return step results from every env yet

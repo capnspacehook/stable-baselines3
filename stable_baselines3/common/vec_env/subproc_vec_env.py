@@ -142,26 +142,31 @@ class SubprocVecEnv(VecEnv):
         self.waiting = True
 
     def step_wait(self) -> VecEnvStepReturn:
-        results = []
-        next_env_ids = []
-        while len(results) < self.batch_size:
-            for key, _ in self.sel.select():
-                remote_pipe = key.fileobj
-                env_id = self.remotes.index(remote_pipe)
+        if self.batch_size == self.num_envs:
+            results = [remote.recv() for remote in self.remotes]
+        else:
+            results = []
+            next_env_ids = []
+            while len(results) < self.batch_size:
+                for key, _ in self.sel.select():
+                    remote_pipe = key.fileobj
+                    env_id = self.remotes.index(remote_pipe)
 
-                if remote_pipe.poll():
-                    obs, rew, dones, info, reset_info = remote_pipe.recv()
-                    info["step"] = self.env_steps[env_id]
-                    info["env_id"] = env_id
-                    results.append((obs, rew, dones, info, reset_info))
-                    next_env_ids.append(env_id)
+                    # TODO: is poll necessary?
+                    if remote_pipe.poll():
+                        obs, rew, dones, info, reset_info = remote_pipe.recv()
+                        info["step"] = self.env_steps[env_id]
+                        info["env_id"] = env_id
+                        results.append((obs, rew, dones, info, reset_info))
+                        next_env_ids.append(env_id)
 
-                    self.env_steps[env_id] += 1
+                        self.env_steps[env_id] += 1
 
-                if len(results) == self.batch_size:
-                    break
+                    if len(results) == self.batch_size:
+                        break
 
-        self.last_env_ids = next_env_ids
+            self.last_env_ids = next_env_ids
+
         self.waiting = False
         obs, rews, dones, infos, self.reset_infos = zip(*results)  # type: ignore[assignment]
         return _flatten_obs(obs, self.observation_space), np.stack(rews), np.stack(dones), infos  # type: ignore[return-value]

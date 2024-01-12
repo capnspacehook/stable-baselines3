@@ -30,7 +30,7 @@ class DictObsVecEnv(VecEnv):
                 for _ in range(self.num_envs)
             ]
         else:
-            infos = []
+            infos = [{} for i in range(self.num_envs)]
         return (
             {"rgb": np.zeros((self.num_envs, 86, 86), dtype=np.float32)},
             np.zeros((self.num_envs,), dtype=np.float32),
