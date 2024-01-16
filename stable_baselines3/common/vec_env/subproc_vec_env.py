@@ -143,7 +143,11 @@ class SubprocVecEnv(VecEnv):
 
     def step_wait(self) -> VecEnvStepReturn:
         if self.batch_size == self.num_envs:
-            results = [remote.recv() for remote in self.remotes]
+            results = [self.results_queue.get() for _ in range(self.num_envs)]
+            # Sort by env_id
+            results = sorted(results, key=lambda r: r[0])
+            # Remove env_id
+            results = [r[1:] for r in results]
         else:
             results = []
             next_env_ids = []
@@ -163,7 +167,9 @@ class SubprocVecEnv(VecEnv):
 
         self.waiting = False
         obs, rews, dones, infos, self.reset_infos = zip(*results)  # type: ignore[assignment]
-        return _flatten_obs(obs, self.observation_space), np.stack(rews), np.stack(dones), infos  # type: ignore[return-value]
+        if self.batch_size == self.num_envs:
+            return _flatten_obs(obs, self.observation_space), np.stack(rews), np.stack(dones), infos  # type: ignore[return-value]
+        return obs, rews, dones, infos
 
     def reset(self) -> VecEnvObs:
         for env_idx, remote in enumerate(self.remotes):

@@ -257,11 +257,17 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             new_obs, rewards, dones, infos = env.step(clipped_actions)
 
-            self._last_batch_obs = new_obs
             self.num_timesteps += len(infos)
             # If the VecEnv returned results for all envs, just return them
             if len(infos) == env.num_envs:
+                # Observations will be flattened if results from all envs
+                # was returned
+                self._last_batch_obs = new_obs
                 return actions, values, log_probs, new_obs, rewards, dones, infos
+            
+            # Observations need to be flattened since results were not
+            # returned from all envs
+            self._last_batch_obs = _flatten_obs(new_obs, env.observation_space)
 
             # Store the returned results, there may not be enough results
             # to return step results from every env yet
@@ -274,11 +280,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                     if step not in self._training_data:
                         self._training_data[step] = [None] * env.num_envs
 
-                # new_obs is an OrderedDict and we need to extract a single
-                # dict that's from env env_id so we keep all env results in
-                # one place
-                obs = {key: new_obs[key][i] for key in new_obs.keys()}
-                self._results[step][env_id] = (obs, rewards[i], dones[i], info)
+                self._results[step][env_id] = (new_obs[i], rewards[i], dones[i], info)
                 if self._training_data[step][env_id] is None:
                     self._training_data[step][env_id] = (actions[i], values[i], log_probs[i])
 
@@ -297,7 +299,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                     np.stack(actions),
                     th.stack(values),
                     th.stack(log_probs),
-                    _flatten_obs(new_obs, space=env.observation_space),
+                    _flatten_obs(new_obs, env.observation_space),
                     np.stack(rewards),
                     np.stack(dones),
                     infos,
