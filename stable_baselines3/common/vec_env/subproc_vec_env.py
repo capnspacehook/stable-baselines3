@@ -152,10 +152,10 @@ class SubprocVecEnv(VecEnv):
             results = []
             next_env_ids = []
             while len(results) < self.batch_size:
-                env_id, obs, rew, dones, info, reset_info = self.results_queue.get()
+                env_id, new_obs, rew, dones, info, reset_info = self.results_queue.get()
                 info["step"] = self.env_steps[env_id]
                 info["env_id"] = env_id
-                results.append((obs, rew, dones, info, reset_info))
+                results.append((new_obs, rew, dones, info, reset_info))
                 next_env_ids.append(env_id)
 
                 self.env_steps[env_id] += 1
@@ -166,10 +166,10 @@ class SubprocVecEnv(VecEnv):
             self.last_env_ids = next_env_ids
 
         self.waiting = False
-        obs, rews, dones, infos, self.reset_infos = zip(*results)  # type: ignore[assignment]
+        new_obs, rews, dones, infos, self.reset_infos = zip(*results)  # type: ignore[assignment]
         if self.batch_size == self.num_envs:
-            return _flatten_obs(obs, self.observation_space), np.stack(rews), np.stack(dones), infos  # type: ignore[return-value]
-        return obs, rews, dones, infos
+            return _flatten_obs(new_obs, self.observation_space), np.stack(rews), np.stack(dones), infos  # type: ignore[return-value]
+        return new_obs, rews, dones, infos
 
     def reset(self) -> VecEnvObs:
         for env_idx, remote in enumerate(self.remotes):

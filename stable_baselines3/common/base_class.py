@@ -143,9 +143,12 @@ class BaseAlgorithm(ABC):
         self.learning_rate = learning_rate
         self.tensorboard_log = tensorboard_log
         self._last_obs = None  # type: Optional[Union[np.ndarray, Dict[str, np.ndarray]]]
-        self._last_batch_obs = None
         self._last_episode_starts = None  # type: Optional[np.ndarray]
+        # Used for handling batching VecEnvs
+        self._last_batch_obs = None
         self._seen_steps = set()
+        self._next_envs = []
+        self._next_env_steps = {env_id: 0 for env_id in range(env.num_envs)}
         self._training_data = {}
         self._results = {}
         self.last_step_results = ()
