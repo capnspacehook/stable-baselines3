@@ -2,15 +2,12 @@ import inspect
 import warnings
 from abc import ABC, abstractmethod
 from copy import deepcopy
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple, Type, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Type, Union
 
 import cloudpickle
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
-
-if TYPE_CHECKING:
-    from stable_baselines3.common import base_class
 
 # Define type aliases here to avoid circular import
 # Used when we want to access one or more VecEnv
@@ -58,19 +55,17 @@ class VecEnv(ABC):
     :param action_space: Action space
     """
 
-    # The RL model
-    # Type hint as string to avoid circular import
-    model: "base_class.BaseAlgorithm"
-
     def __init__(
         self,
         num_envs: int,
         observation_space: spaces.Space,
         action_space: spaces.Space,
+        batch_size: Optional[int] = None,
     ):
         self.num_envs = num_envs
         self.observation_space = observation_space
         self.action_space = action_space
+        self.batch_size = batch_size if batch_size is not None else self.num_envs
         # store info returned by the reset method
         self.reset_infos: List[Dict[str, Any]] = [{} for _ in range(num_envs)]
         # seeds to be used in the next call to env.reset()
@@ -201,17 +196,6 @@ class VecEnv(ABC):
         :return: True if the env is wrapped, False otherwise, for each env queried.
         """
         raise NotImplementedError()
-
-    def init_vec_env(self, model: "base_class.BaseAlgorithm") -> None:
-        """
-        Initialize the environments by saving references to the
-        RL model and the training environment for convenience.
-        """
-        self.model = model
-        self._init_vec_env()
-
-    def _init_vec_env(self) -> None:
-        pass
 
     def step(self, actions: np.ndarray) -> VecEnvStepReturn:
         """

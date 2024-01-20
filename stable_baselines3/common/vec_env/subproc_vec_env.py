@@ -106,10 +106,6 @@ class SubprocVecEnv(VecEnv):
         self.last_env_ids = list(range(n_envs))
         self.env_steps = {env_id: 0 for env_id in range(n_envs)}
 
-        self.batch_size = batch_size
-        if self.batch_size is None:
-            self.batch_size = n_envs
-
         if start_method is None:
             # Fork is not a thread safe method (see issue #217)
             # but is more user friendly (does not require to wrap the code in
@@ -134,7 +130,7 @@ class SubprocVecEnv(VecEnv):
         self.remotes[0].send(("get_spaces", None))
         observation_space, action_space = self.remotes[0].recv()
 
-        super().__init__(len(env_fns), observation_space, action_space)
+        super().__init__(len(env_fns), observation_space, action_space, batch_size=batch_size)
 
     def step_async(self, actions: np.ndarray) -> None:
         for i, action in zip(self.last_env_ids, actions):

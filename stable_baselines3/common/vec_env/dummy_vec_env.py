@@ -26,7 +26,7 @@ class DummyVecEnv(VecEnv):
 
     actions: np.ndarray
 
-    def __init__(self, env_fns: List[Callable[[], gym.Env]]):
+    def __init__(self, env_fns: List[Callable[[], gym.Env]], batch_size: Optional[int] = None):
         self.envs = [_patch_env(fn()) for fn in env_fns]
         if len(set([id(env.unwrapped) for env in self.envs])) != len(self.envs):
             raise ValueError(
@@ -39,7 +39,7 @@ class DummyVecEnv(VecEnv):
                 "Please read https://github.com/DLR-RM/stable-baselines3/issues/1151 for more information."
             )
         env = self.envs[0]
-        super().__init__(len(env_fns), env.observation_space, env.action_space)
+        super().__init__(len(env_fns), env.observation_space, env.action_space, batch_size=batch_size)
         obs_space = env.observation_space
         self.keys, shapes, dtypes = obs_space_info(obs_space)
 
