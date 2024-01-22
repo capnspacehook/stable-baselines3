@@ -12,8 +12,8 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean
-from stable_baselines3.common.vec_env import VecEnv
-from stable_baselines3.common.vec_env.subproc_vec_env import _flatten_obs
+from stable_baselines3.common.vec_env.base_vec_env import VecEnv, VecEnvObs
+from stable_baselines3.common.vec_env.vec_batcher import VecBatcher
 
 SelfOnPolicyAlgorithm = TypeVar("SelfOnPolicyAlgorithm", bound="OnPolicyAlgorithm")
 
@@ -136,6 +136,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         )
         self.policy = self.policy.to(self.device)
 
+        self.env = VecBatcher(self.env, self._get_actions, self._clip_actions)
+
     def collect_rollouts(
         self,
         env: VecEnv,
@@ -160,7 +162,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(False)
 
-        n_steps = 0
+        self.n_steps = 0
         rollout_buffer.reset()
         # Sample new weights for the state dependent exploration
         if self.use_sde:
@@ -168,10 +170,12 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
         callback.on_rollout_start()
 
-        while n_steps < n_rollout_steps:
-            actions, values, log_probs, new_obs, rewards, dones, infos = self._step(env, n_steps)
-            self.last_step_results = (new_obs, rewards, dones, infos)
-            self.num_steps += 1
+        while self.n_steps < n_rollout_steps:
+            results, output = self.env.full_step()
+            new_obs, rewards, dones, infos = results
+            actions, values, log_probs = output
+
+            self.num_timesteps += env.num_envs
 
             # Give access to local variables
             callback.update_locals(locals())
@@ -179,7 +183,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 return False
 
             self._update_info_buffer(infos)
-            n_steps += 1
+            self.n_steps += 1
 
             if isinstance(self.action_space, spaces.Discrete):
                 # Reshape in case of discrete action
@@ -221,97 +225,32 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
         return True
 
-    # TODO: generalize into a wrapper class
-    def _step(self, env: VecEnv, n_steps: int):
-        while True:
-            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
-                # Sample a new noise matrix
-                self.policy.reset_noise(self.n_envs)
+    def _get_actions(self, obs: VecEnvObs) -> Tuple[np.ndarray, Tuple[th.Tensor, th.Tensor]]:
+        if self.use_sde and self.sde_sample_freq > 0 and self.n_steps % self.sde_sample_freq == 0:
+            # Sample a new noise matrix
+            self.policy.reset_noise(self.n_envs)
 
-            with th.no_grad():
-                # Convert to pytorch tensor or to TensorDict
-                obs_tensor = obs_as_tensor(self._last_batch_obs, self.device)
-                actions, values, log_probs = self.policy(obs_tensor)
-            actions = actions.cpu().numpy()
+        with th.no_grad():
+            # Convert to pytorch tensor or to TensorDict
+            obs_tensor = obs_as_tensor(obs, self.device)
+            actions, values, log_probs = self.policy(obs_tensor)
+        actions = actions.cpu().numpy()
 
-            # Store policy outputs so they can be grouped with step returns 
-            # once all envs finish a step
-            if len(actions) == self.n_envs:
-                self._seen_steps.add(self.num_timesteps)
-                self._training_data[self.num_timesteps] = [None] * self.n_envs
-                for env_id, action in enumerate(actions):
-                    self._training_data[self.num_timesteps][env_id] = (action, values[env_id], log_probs[env_id])
+        return actions, (values, log_probs)
+    
+    def _clip_actions(self, actions: np.ndarray) -> np.ndarray:
+        clipped_actions = actions
+        if isinstance(self.action_space, spaces.Box):
+            if self.policy.squash_output:
+                # Unscale the actions to match env bounds
+                # if they were previously squashed (scaled in [-1, 1])
+                clipped_actions = self.policy.unscale_action(clipped_actions)
             else:
-                for i, env_id in enumerate(self._next_envs):
-                    step = self._next_env_steps[env_id]
-                    if step not in self._training_data:
-                        self._seen_steps.add(step)
-                        self._training_data[step] = [None] * self.n_envs
-                    
-                    self._training_data[step][env_id] = (actions[i], values[i], log_probs[i])
+                # Otherwise, clip the actions to avoid out of bound error
+                # as we are sampling from an unbounded Gaussian distribution
+                clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
-            # Rescale and perform action
-            clipped_actions = actions
-
-            if isinstance(self.action_space, spaces.Box):
-                if self.policy.squash_output:
-                    # Unscale the actions to match env bounds
-                    # if they were previously squashed (scaled in [-1, 1])
-                    clipped_actions = self.policy.unscale_action(clipped_actions)
-                else:
-                    # Otherwise, clip the actions to avoid out of bound error
-                    # as we are sampling from an unbounded Gaussian distribution
-                    clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
-
-            new_obs, rewards, dones, infos = env.step(clipped_actions)
-
-            self.num_timesteps += len(infos)
-            # If the VecEnv returned results for all envs, just return them
-            if len(infos) == self.n_envs:
-                # Observations will be flattened if results from all envs
-                # was returned
-                self._last_batch_obs = new_obs
-                return actions, values, log_probs, new_obs, rewards, dones, infos
-            
-            # Observations need to be flattened since results were not
-            # returned from all envs
-            self._last_batch_obs = _flatten_obs(new_obs, env.observation_space)
-
-            # Store the returned results, there may not be enough results
-            # to return step results from every env yet
-            seen_envs = []
-            for i, info in enumerate(infos):
-                step = info["step"]
-                env_id = info["env_id"]
-                if step not in self._results:
-                    self._results[step] = [None] * self.n_envs
-
-                seen_envs.append(env_id)
-                self._next_env_steps[env_id] = step + 1
-                self._results[step][env_id] = (new_obs[i], rewards[i], dones[i], info)
-
-            self._next_envs = seen_envs
-
-            # If the smallest step we've seen has results from all envs,
-            # process and return the results
-            min_step = min(self._seen_steps)
-            if None not in self._results[min_step]:
-                actions, values, log_probs = zip(*self._training_data[min_step])
-                new_obs, rewards, dones, infos = zip(*self._results[min_step])
-
-                self._seen_steps.remove(min_step)
-                del self._training_data[min_step]
-                del self._results[min_step]
-
-                return (
-                    np.stack(actions),
-                    th.stack(values),
-                    th.stack(log_probs),
-                    _flatten_obs(new_obs, env.observation_space),
-                    np.stack(rewards),
-                    np.stack(dones),
-                    infos,
-                )
+        return clipped_actions
 
     def train(self) -> None:
         """
