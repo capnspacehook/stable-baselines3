@@ -132,7 +132,6 @@ class BaseAlgorithm(ABC):
         self.policy_kwargs = {} if policy_kwargs is None else policy_kwargs
 
         self.num_timesteps = 0
-        self.num_steps = 0
         # Used for updating schedules
         self._total_timesteps = 0
         # Used for computing fps, it is updated at each call of learn()
@@ -151,7 +150,6 @@ class BaseAlgorithm(ABC):
         self._next_env_steps = {env_id: 0 for env_id in range(env.num_envs)}
         self._training_data = {}
         self._results = {}
-        self.last_step_results = ()
         # When using VecNormalize:
         self._last_original_obs = None  # type: Optional[Union[np.ndarray, Dict[str, np.ndarray]]]
         self._episode_num = 0

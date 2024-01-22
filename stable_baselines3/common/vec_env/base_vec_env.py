@@ -364,6 +364,7 @@ class VecEnvWrapper(VecEnv):
             num_envs=venv.num_envs,
             observation_space=observation_space or venv.observation_space,
             action_space=action_space or venv.action_space,
+            batch_size=venv.batch_size,
         )
         self.class_attributes = dict(inspect.getmembers(self.__class__))
 
